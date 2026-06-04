@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Isolated Multi-Document RAG Workspace</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Main Style Sheet -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="app-container">
+        <!-- Sidebar Area -->
+        <aside class="sidebar">
+            <div class="logo-area">
+                <i class="fa-solid fa-brain-circuit logo-icon"></i>
+                <h2>Antigravity RAG</h2>
+            </div>
+            
+            <div class="workspace-card">
+                <div class="ws-header">
+                    <span class="label">Current Workspace</span>
+                    <button id="btn-delete-ws" class="btn-icon delete" title="Delete Workspace">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>
+                <div id="ws-info" class="ws-info-container">
+                    <span id="ws-id-display">Generating...</span>
+                    <button id="btn-copy-ws" class="btn-icon copy" title="Copy Workspace ID">
+                        <i class="fa-regular fa-copy"></i>
+                    </button>
+                </div>
+                <div class="ws-actions">
+                    <button id="btn-new-ws" class="btn-secondary">
+                        <i class="fa-solid fa-plus"></i> New Workspace
+                    </button>
+                </div>
+            </div>
+
+            <!-- PDF Upload Drag & Drop Area -->
+            <div class="upload-section">
+                <h3>Upload Documents</h3>
+                <div id="dropzone" class="dropzone">
+                    <i class="fa-solid fa-cloud-arrow-up drop-icon"></i>
+                    <p>Drag & Drop PDFs or click to browse</p>
+                    <input type="file" id="file-input" multiple accept=".pdf" style="display: none;">
+                </div>
+                <div id="upload-progress-container" class="upload-progress-container"></div>
+            </div>
+
+            <!-- Uploaded Documents List -->
+            <div class="docs-section">
+                <h3>Workspace Files</h3>
+                <ul id="docs-list" class="docs-list">
+                    <li class="empty-list-msg">No files uploaded yet.</li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- Main Chat Panel -->
+        <main class="main-panel">
+            <header class="main-header">
+                <div class="header-title">
+                    <h1 id="workspace-title-display">RAG AI Assistant</h1>
+                    <span class="badge">Gemini 2.5 Flash + BGE Embeddings</span>
+                </div>
+                <div class="api-status">
+                    <span class="status-dot healthy"></span>
+                    <span>System Online</span>
+                </div>
+            </header>
+
+            <!-- Chat History Pane -->
+            <section id="chat-pane" class="chat-pane">
+                <div class="welcome-message-container">
+                    <div class="welcome-icon">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    </div>
+                    <h2>Welcome to your RAG Workspace!</h2>
+                    <p>Upload multiple PDF files (e.g. documentation, books, research papers). Ask complex cross-document questions and receive responses referencing citations from original texts.</p>
+                </div>
+            </section>
+
+            <!-- Query Input Bar -->
+            <footer class="chat-input-area">
+                <form id="chat-form" class="chat-form">
+                    <input type="text" id="query-input" placeholder="Ask a question about your uploaded documents..." autocomplete="off" required disabled>
+                    <button type="submit" id="btn-send-chat" class="btn-primary" disabled>
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+            </footer>
+        </main>
+    </div>
+
+    <!-- Client JavaScript Script -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

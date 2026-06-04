@@ -1,0 +1,36 @@
+# Environments
+.env
+.env.*
+.venv/
+env/
+venv/
+
+# Python cache and testing
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite3
+database/*.db
+
+# Uploads & Logs
+uploads/*
+!uploads/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE configurations
+.vscode/
+.idea/
+.gemini/
