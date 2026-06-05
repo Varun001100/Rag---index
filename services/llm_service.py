@@ -1,76 +1,154 @@
-import google.generativeai as genai
-from config.settings import settings
-from utils.logger import logger
-from models.conversation_model import Conversation
-from typing import List
+import os
+from google import genai
+from google.genai import types
+from config.settings import Config
 
-class LLMService:
-    def __init__(self):
-        self.api_key = settings.GEMINI_API_KEY
-        self._model = None
 
-    def _get_model(self) -> genai.GenerativeModel:
-        """Configures the google-generativeai SDK and retrieves the gemini-2.5-flash model instance."""
-        if not self._model:
-            if not self.api_key:
-                raise ValueError("GEMINI_API_KEY environment variable is not set.")
-            genai.configure(api_key=self.api_key)
-            self._model = genai.GenerativeModel("gemini-2.5-flash")
-        return self._model
+class LlmService:
 
-    def generate_answer(self, question: str, context: str, history: List[Conversation]) -> str:
+    _api_keys = []
+    _models = []
+    _clients = {}  # Cache Client instances per API key
+    _current_key_idx = 0
+    _current_model_idx = 0
+    _initialized = False
+
+    @classmethod
+    def initialize_rotation(cls):
         """
-        Sends the compiled prompt containing context and chat history to the LLM.
-        
-        Args:
-            question: The user's current query.
-            context: Aggregated text from parent chunks.
-            history: List of past Conversation turns for context.
-            
-        Returns:
-            The model's textual answer.
+        Loads configured API keys and models for round-robin rotation.
         """
-        logger.info("Generating response from Gemini 2.5 Flash.")
-        
-        # Compile historical chat turns
-        if history:
-            history_lines = []
-            for turn in history:
-                history_lines.append(f"User: {turn.question}")
-                history_lines.append(f"Assistant: {turn.answer}")
-            history_str = "\n".join(history_lines)
+        if cls._initialized:
+            return
+
+        # Load keys
+        keys_str = Config.GEMINI_API_KEYS
+        if keys_str:
+            cls._api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
         else:
-            history_str = "No previous conversation history."
-            
-        system_instruction = (
-            "You are an advanced RAG assistant. You must answer the user's question based strictly and ONLY on the provided context below. "
-            "Do not use any outside knowledge or general training knowledge to answer. Do not hallucinate or extrapolate. "
-            "If the answer to the question is not explicitly or directly found in the provided context, you must respond EXACTLY with: "
-            "\"I could not find that information in the uploaded documents.\""
-        )
-        
-        prompt = f"""System Instructions:
-{system_instruction}
+            cls._api_keys = []
 
-Context:
-{context}
+        if not cls._api_keys and Config.GEMINI_API_KEY:
+            cls._api_keys = [Config.GEMINI_API_KEY]
 
-Conversation History:
-{history_str}
+        # Load models
+        models_str = Config.GEMINI_MODELS
+        if models_str:
+            cls._models = [m.strip() for m in models_str.split(",") if m.strip()]
+        else:
+            cls._models = []
 
-User Question: {question}
+        if not cls._models:
+            cls._models = [Config.GEMINI_MODEL]
+
+        cls._current_key_idx = 0
+        cls._current_model_idx = 0
+        cls._initialized = True
+
+    @classmethod
+    def get_client_by_key(cls, api_key):
+        """
+        Gets or creates a GenAI Client instance for the specified API key.
+        """
+        if api_key not in cls._clients:
+            cls._clients[api_key] = genai.Client(api_key=api_key)
+        return cls._clients[api_key]
+
+    @classmethod
+    def get_client(cls):
+        """
+        Fallback implementation for compatibility with other parts of the application.
+        """
+        cls.initialize_rotation()
+        if cls._api_keys:
+            return cls.get_client_by_key(cls._api_keys[0])
+        return genai.Client(api_key=Config.GEMINI_API_KEY)
+
+    @classmethod
+    def generate_answer(cls, query, chunks, history):
+        """
+        Generates an answer using Gemini, leveraging conversation history
+        and retrieved parent chunks as context, with round-robin failover.
+        """
+        cls.initialize_rotation()
+
+        if not cls._api_keys:
+            return "Error: No Gemini API keys configured. Please set GEMINI_API_KEY or GEMINI_API_KEYS in .env."
+
+        # Format context chunks
+        context_text = ""
+        if chunks:
+            context_text += "\n--- RETRIEVED DOCUMENT CONTEXT ---\n"
+            for chunk in chunks:
+                context_text += (
+                    f"[Source Document: {chunk['filename']}, Page: {chunk['page_number']}]\n"
+                    f"{chunk['text']}\n\n"
+                )
+        else:
+            context_text += "\nNo document context is available for this session.\n"
+
+        # Format conversation history (up to recent limit)
+        history_text = ""
+        if history:
+            history_text += "\n--- RECENT CONVERSATION HISTORY ---\n"
+            for turn in history:
+                history_text += f"User: {turn['question']}\nAssistant: {turn['answer']}\n\n"
+
+        # Construct final prompt
+        prompt = f"""
+Use the retrieved document context and the conversation history above to answer the User Question at the end.
+
+INSTRUCTIONS:
+1. Provide a direct, helpful, and factually accurate answer.
+2. Rely only on the provided context. If the answer cannot be found or inferred from the context, state: "I cannot find the answer in the uploaded documents."
+3. Do not make up facts or use external knowledge not present in the documents.
+
+{context_text}
+{history_text}
+User Question: {query}
 Answer:"""
 
-        try:
-            model = self._get_model()
-            # Set temperature to 0 to prevent creative additions / hallucinations
-            response = model.generate_content(
-                prompt,
-                generation_config={"temperature": 0.0}
-            )
-            answer = response.text.strip()
-            logger.info("Successfully received response from Gemini API.")
-            return answer
-        except Exception as e:
-            logger.error(f"Gemini API generation failed: {str(e)}")
-            raise e
+        system_instruction = (
+            "You are a production-grade Multi-Document RAG assistant. "
+            "Your sole objective is to answer the user's questions truthfully and accurately using ONLY "
+            "the provided context from their uploaded PDF documents. "
+            "Never hallucinate or refer to external facts."
+        )
+
+        total_attempts = len(cls._api_keys) * len(cls._models)
+        last_error = None
+
+        for attempt in range(total_attempts):
+            api_key = cls._api_keys[cls._current_key_idx]
+            model = cls._models[cls._current_model_idx]
+
+            try:
+                client = cls.get_client_by_key(api_key)
+                
+                print(f"[LLM] Attempt {attempt+1}/{total_attempts}: Using model '{model}' with key index {cls._current_key_idx}")
+                
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.2,
+                    )
+                )
+                
+                # Request succeeded: advance rotation pointers for the next query
+                cls._current_key_idx = (cls._current_key_idx + 1) % len(cls._api_keys)
+                cls._current_model_idx = (cls._current_model_idx + 1) % len(cls._models)
+                
+                return response.text
+
+            except Exception as e:
+                last_error = e
+                print(f"[LLM] Attempt {attempt+1} failed with model '{model}' & key index {cls._current_key_idx}. Error: {e}")
+                
+                # Attempt failed: failover to next key and next model for subsequent attempt
+                cls._current_key_idx = (cls._current_key_idx + 1) % len(cls._api_keys)
+                cls._current_model_idx = (cls._current_model_idx + 1) % len(cls._models)
+
+        # If all combinations of keys and models failed
+        return f"Error: Failed to generate response from Gemini after trying all configured keys and models. Details: {str(last_error)}"

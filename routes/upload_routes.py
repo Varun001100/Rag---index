@@ -1,120 +1,268 @@
 import os
-from flask import Blueprint, request, jsonify
-from services.workspace_service import WorkspaceService
+import uuid
+
+from flask import (
+    Blueprint,
+    request,
+    jsonify
+)
+
+from services.session_service import SessionService
+from config.settings import Config
 from services.ingestion_service import IngestionService
-from config.settings import settings
-from utils.file_utils import is_allowed_file, get_workspace_upload_dir
-from database.db import get_db
-from werkzeug.utils import secure_filename
-from utils.logger import logger
+from services.pinecone_service import PineconeService
+from database.db import execute_query, execute_insert
 
-upload_bp = Blueprint("upload", __name__)
-workspace_service = WorkspaceService()
-ingestion_service = IngestionService()
+upload_bp = Blueprint(
+    "upload",
+    __name__,
+    url_prefix="/api/upload"
+)
 
-@upload_bp.route("/upload", methods=["POST"])
-def upload_files():
-    """
-    Accepts one or more PDF files in the 'files' field.
-    Requires workspace_id as a form field.
-    """
-    # 1. Validate Workspace ID
-    workspace_id = request.form.get("workspace_id")
-    if not workspace_id:
-        logger.warning("API - Upload request received without workspace_id.")
-        return jsonify({"error": "workspace_id is required"}), 400
-        
-    if not workspace_service.workspace_exists(workspace_id):
-        logger.warning(f"API - Upload request received for non-existent workspace: {workspace_id}")
-        return jsonify({"error": "Workspace does not exist"}), 404
-        
-    # 2. Check files are in Request
-    if "files" not in request.files:
-        logger.warning("API - Upload request received without files field.")
-        return jsonify({"error": "No file part in the request"}), 400
-        
-    files = request.files.getlist("files")
-    if not files or files[0].filename == "":
-        logger.warning("API - Upload request received with empty files selection.")
-        return jsonify({"error": "No files selected for upload"}), 400
-        
-    logger.info(f"API - Uploading {len(files)} files to workspace: {workspace_id}")
-    
-    upload_dir = get_workspace_upload_dir(workspace_id, settings.get_upload_dir)
-    ingested_docs = []
-    errors = []
-    
-    for file in files:
-        filename = file.filename
-        if not filename:
-            continue
-            
-        if not is_allowed_file(filename):
-            errors.append(f"File {filename} is not a valid PDF.")
-            logger.warning(f"API - Rejected invalid file format: {filename}")
-            continue
-            
-        # Secure name and build path
-        secured_name = secure_filename(filename)
-        save_path = os.path.join(upload_dir, secured_name)
-        
-        try:
-            file.save(save_path)
-            
-            # Ingest PDF content
-            doc_id = ingestion_service.ingest_pdf(workspace_id, filename, save_path)
-            
-            with get_db() as conn:
-                row = conn.execute(
-                    "SELECT id, filename, total_pages FROM documents WHERE id = ?",
-                    (doc_id,)
-                ).fetchone()
-                if row:
-                    ingested_docs.append({
-                        "id": row["id"],
-                        "filename": row["filename"],
-                        "total_pages": row["total_pages"]
-                    })
-        except Exception as e:
-            logger.error(f"API - Failed to ingest file {filename}: {str(e)}")
-            errors.append(f"Failed to ingest file {filename}: {str(e)}")
-            
-    if errors and not ingested_docs:
-        return jsonify({"error": "; ".join(errors)}), 500
-        
+
+ALLOWED_EXTENSIONS = {"pdf"}
+
+
+def allowed_file(filename):
+    return (
+        "." in filename and
+        filename.rsplit(".", 1)[1].lower()
+        in ALLOWED_EXTENSIONS
+    )
+
+
+@upload_bp.route(
+    "/create-session",
+    methods=["POST"]
+)
+def create_session():
+
+    session_id = SessionService.create_session()
+
+    session_folder = os.path.join(
+        Config.UPLOAD_FOLDER,
+        session_id
+    )
+
+    os.makedirs(
+        session_folder,
+        exist_ok=True
+    )
+
     return jsonify({
-        "message": "Ingestion completed.",
-        "documents": ingested_docs,
-        "warnings": errors
-    }), 200
+        "success": True,
+        "session_id": session_id
+    }), 201
 
-@upload_bp.route("/documents", methods=["GET"])
-def get_documents():
-    """Returns a list of all documents uploaded to the workspace."""
-    workspace_id = request.args.get("workspace_id")
-    if not workspace_id:
-        return jsonify({"error": "workspace_id is required"}), 400
-        
-    if not workspace_service.workspace_exists(workspace_id):
-        return jsonify({"error": "Workspace does not exist"}), 404
-        
-    try:
-        with get_db() as conn:
-            cursor = conn.execute(
-                "SELECT id, filename, upload_time, total_pages FROM documents WHERE workspace_id = ? ORDER BY id DESC",
-                (workspace_id,)
+
+@upload_bp.route(
+    "/pdfs",
+    methods=["POST"]
+)
+def upload_pdfs():
+
+    session_id = request.form.get(
+        "session_id"
+    )
+
+    if not session_id:
+        return jsonify({
+            "success": False,
+            "message": "session_id required"
+        }), 400
+
+    if not SessionService.session_exists(
+        session_id
+    ):
+        return jsonify({
+            "success": False,
+            "message": "Invalid session"
+        }), 404
+
+    files = request.files.getlist(
+        "files"
+    )
+
+    if not files:
+        return jsonify({
+            "success": False,
+            "message": "No files uploaded"
+        }), 400
+
+    session_folder = os.path.join(
+        Config.UPLOAD_FOLDER,
+        session_id
+    )
+
+    os.makedirs(
+        session_folder,
+        exist_ok=True
+    )
+
+    uploaded_files = []
+
+    for file in files:
+
+        if not file.filename:
+            continue
+
+        if not allowed_file(
+            file.filename
+        ):
+            continue
+
+        document_id = (
+            f"doc_{uuid.uuid4().hex[:12]}"
+        )
+
+        filename = file.filename
+
+        saved_filename = (
+            f"{document_id}_{filename}"
+        )
+
+        file_path = os.path.join(
+            session_folder,
+            saved_filename
+        )
+
+        file.save(file_path)
+
+        ingestion_result = (
+            IngestionService
+            .ingest_document(
+                session_id=session_id,
+                document_id=document_id,
+                filename=filename,
+                file_path=file_path
             )
-            rows = cursor.fetchall()
-            docs = [
-                {
-                    "id": row["id"],
-                    "filename": row["filename"],
-                    "upload_time": row["upload_time"],
-                    "total_pages": row["total_pages"]
-                }
-                for row in rows
-            ]
-            return jsonify({"documents": docs}), 200
+        )
+
+        uploaded_files.append({
+            "document_id": document_id,
+            "filename": filename,
+            "ingestion": ingestion_result
+        })
+
+    return jsonify({
+        "success": True,
+        "session_id": session_id,
+        "uploaded_count": len(
+            uploaded_files
+        ),
+        "documents": uploaded_files
+    }), 201
+
+
+@upload_bp.route(
+    "/status/<document_id>",
+    methods=["GET"]
+)
+def get_ingestion_status(document_id):
+    """
+    Returns the background ingestion status of a document.
+    """
+    status = IngestionService.get_status(document_id)
+    return jsonify(status), 200
+
+
+@upload_bp.route("/documents/<session_id>", methods=["GET"])
+def get_session_documents(session_id):
+    """
+    Retrieves all ingested documents for a given session.
+    """
+    if not SessionService.session_exists(session_id):
+        return jsonify({
+            "success": False,
+            "message": "Invalid session"
+        }), 404
+
+    try:
+        results = execute_query(
+            """
+            SELECT document_id, filename, file_path
+            FROM documents
+            WHERE session_id = ?
+            """,
+            (session_id,)
+        )
+
+        documents = []
+        for r in results:
+            doc_id = r["document_id"]
+            status = IngestionService.get_status(doc_id)
+            documents.append({
+                "document_id": doc_id,
+                "filename": r["filename"],
+                "file_path": r["file_path"],
+                "ingestion": status
+            })
+
+        return jsonify({
+            "success": True,
+            "documents": documents
+        }), 200
     except Exception as e:
-        logger.error(f"API - Failed to retrieve documents for workspace {workspace_id}: {str(e)}")
-        return jsonify({"error": "Failed to retrieve documents"}), 500
+        print(f"Error listing documents for session {session_id}: {e}")
+        return jsonify({
+            "success": False,
+            "message": f"Failed to list documents: {str(e)}"
+        }), 500
+
+
+@upload_bp.route("/document/<document_id>", methods=["DELETE"])
+def delete_document(document_id):
+    """
+    Clears a single document: deletes vectors from Pinecone, deletes records from SQLite,
+    and removes the physical file from local uploads folder.
+    """
+    try:
+        # 1. Fetch document metadata
+        results = execute_query(
+            """
+            SELECT session_id, file_path, filename
+            FROM documents
+            WHERE document_id = ?
+            """,
+            (document_id,)
+        )
+        if not results:
+            return jsonify({
+                "success": False,
+                "message": "Document not found"
+            }), 404
+
+        record = results[0]
+        session_id = record["session_id"]
+        file_path = record["file_path"]
+
+        # 2. Delete vectors from Pinecone
+        PineconeService.delete_document_vectors(document_id)
+
+        # 3. Delete database record (cascade deletes parent chunks)
+        execute_insert(
+            """
+            DELETE FROM documents
+            WHERE document_id = ?
+            """,
+            (document_id,)
+        )
+
+        # 4. Remove physical file
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as fe:
+                print(f"Warning: Failed to delete physical file {file_path}: {fe}")
+
+        return jsonify({
+            "success": True,
+            "message": f"Document '{record['filename']}' deleted successfully."
+        }), 200
+
+    except Exception as e:
+        print(f"Error deleting document {document_id}: {e}")
+        return jsonify({
+            "success": False,
+            "message": f"Failed to delete document: {str(e)}"
+        }), 500

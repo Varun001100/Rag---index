@@ -1,50 +1,54 @@
-from database.db import get_db
-from models.conversation_model import Conversation
-from utils.logger import logger
-from typing import List
+from database.db import execute_query, execute_insert
+
 
 class MemoryService:
-    @staticmethod
-    def save_message(workspace_id: str, question: str, answer: str) -> None:
-        """Saves a chat history entry (question and answer) for the workspace."""
-        logger.info(f"Saving conversation history for workspace: {workspace_id}")
-        try:
-            with get_db() as conn:
-                conn.execute(
-                    "INSERT INTO conversations (workspace_id, question, answer) VALUES (?, ?, ?)",
-                    (workspace_id, question, answer)
-                )
-        except Exception as e:
-            logger.error(f"Failed to save conversation entry to database: {str(e)}")
-            raise e
 
     @staticmethod
-    def get_recent_history(workspace_id: str, limit: int = 5) -> List[Conversation]:
+    def get_history(session_id, limit=5):
         """
-        Retrieves the last N conversations for a workspace, ordered chronologically.
+        Retrieves the last N conversation turns for a session from SQLite,
+        ordered by timestamp ascending.
         
-        Args:
-            workspace_id: The active workspace ID filter.
-            limit: Maximum number of chat turns to load.
-            
         Returns:
-            List of Conversation Pydantic models.
+            list: A list of dicts, e.g., [{"question": "...", "answer": "...", "timestamp": "..."}]
         """
-        logger.info(f"Retrieving recent chat history for workspace: {workspace_id} (limit: {limit})")
-        try:
-            with get_db() as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT id, workspace_id, question, answer, created_at 
-                    FROM conversations 
-                    WHERE workspace_id = ? 
-                    ORDER BY id DESC LIMIT ?
-                    """,
-                    (workspace_id, limit)
-                )
-                rows = cursor.fetchall()
-                # Reverse list to ensure older messages appear first in the prompt
-                return [Conversation.model_validate(row) for row in reversed(rows)]
-        except Exception as e:
-            logger.error(f"Failed to load conversation history from database: {str(e)}")
-            raise e
+        query = """
+            SELECT question, answer, timestamp
+            FROM conversations
+            WHERE session_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        rows = execute_query(query, (session_id, limit))
+        
+        # We fetch DESC to get the latest ones, but return in chronological (ASC) order
+        history = []
+        for row in reversed(rows):
+            history.append({
+                "question": row["question"],
+                "answer": row["answer"],
+                "timestamp": row["timestamp"]
+            })
+        return history
+
+    @staticmethod
+    def add_message(session_id, question, answer):
+        """
+        Saves a new conversation turn into the SQLite conversations table.
+        """
+        query = """
+            INSERT INTO conversations (session_id, question, answer)
+            VALUES (?, ?, ?)
+        """
+        return execute_insert(query, (session_id, question, answer))
+
+    @staticmethod
+    def clear_history(session_id):
+        """
+        Deletes all conversation history for a given session.
+        """
+        query = """
+            DELETE FROM conversations
+            WHERE session_id = ?
+        """
+        execute_insert(query, (session_id,))

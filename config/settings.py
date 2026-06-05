@@ -1,45 +1,98 @@
 import os
-from pathlib import Path
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from dotenv import load_dotenv
 
-class Settings(BaseSettings):
-    PORT: int = Field(default=5000)
-    FLASK_ENV: str = Field(default="development")
-    
-    DATABASE_PATH: str = Field(default="database/rag.db")
-    UPLOAD_DIR: str = Field(default="uploads")
-    
-    PINECONE_API_KEY: str = Field(default="")
-    PINECONE_INDEX_NAME: str = Field(default="")
-    GEMINI_API_KEY: str = Field(default="")
-    
-    CHUNK_SIZE: int = Field(default=1000)
-    CHUNK_OVERLAP: int = Field(default=200)
-    WORKSPACE_EXPIRATION_HOURS: int = Field(default=24)
-    
-    @property
-    def base_dir(self) -> Path:
-        return Path(__file__).resolve().parent.parent
-        
-    @property
-    def get_db_path(self) -> str:
-        path = Path(self.DATABASE_PATH)
-        if path.is_absolute():
-            return str(path)
-        return str(self.base_dir / path)
-        
-    @property
-    def get_upload_dir(self) -> str:
-        path = Path(self.UPLOAD_DIR)
-        if path.is_absolute():
-            return str(path)
-        return str(self.base_dir / path)
+load_dotenv()
 
-    model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
-        env_file_encoding="utf-8",
-        extra="ignore"
+
+class Config:
+    # =========================
+    # Flask
+    # =========================
+    SECRET_KEY = os.getenv("SECRET_KEY")
+    FLASK_ENV = os.getenv("FLASK_ENV", "development")
+    FLASK_DEBUG = os.getenv("FLASK_DEBUG", "True") == "True"
+
+    # =========================
+    # Database
+    # =========================
+    DATABASE_PATH = os.getenv(
+        "DATABASE_PATH",
+        "data/rag.db"
     )
 
-settings = Settings()
+    # =========================
+    # Uploads
+    # =========================
+    UPLOAD_FOLDER = os.getenv(
+        "UPLOAD_FOLDER",
+        "uploads"
+    )
+
+    MAX_CONTENT_LENGTH = int(
+        os.getenv(
+            "MAX_CONTENT_LENGTH",
+            52428800
+        )
+    )
+
+
+    # =========================
+    # Pinecone
+    # =========================
+    PINECONE_API_KEY = os.getenv(
+        "PINECONE_API_KEY"
+    )
+
+    PINECONE_INDEX_NAME = os.getenv(
+        "PINECONE_INDEX_NAME"
+    )
+
+    # =========================
+    # Gemini
+    # =========================
+    GEMINI_API_KEY = os.getenv(
+        "GEMINI_API_KEY"
+    )
+
+    GEMINI_API_KEYS = os.getenv(
+        "GEMINI_API_KEYS"
+    )
+
+    GEMINI_MODEL = os.getenv(
+        "GEMINI_MODEL",
+        "gemini-2.5-flash"
+    )
+
+    GEMINI_MODELS = os.getenv(
+        "GEMINI_MODELS"
+    )
+
+    # =========================
+    # Models
+    # =========================
+    EMBEDDING_MODEL = os.getenv(
+        "EMBEDDING_MODEL",
+        "BAAI/bge-small-en-v1.5"
+    )
+
+    RERANKER_MODEL = os.getenv(
+        "RERANKER_MODEL",
+        "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+
+    # =========================
+    # Retrieval
+    # =========================
+    TOP_K_RETRIEVAL = int(
+        os.getenv(
+            "TOP_K_RETRIEVAL",
+            20
+        )
+    )
+
+    TOP_K_RERANK = int(
+        os.getenv(
+            "TOP_K_RERANK",
+            5
+        )
+    )
